@@ -158,6 +158,7 @@ summary <- data %>%
             sum_Perimter = sum(perimeter)) %>%
   filter(MUNI_NAME != " ") %>%
   as.data.frame()
+summary
 ```
 
 Now that we have summarized by municipality and year, we can calculate change for each town. Ultimately we are going to create some "wide" data with columns corresponding to each year and rows corresponding to each municipality.
