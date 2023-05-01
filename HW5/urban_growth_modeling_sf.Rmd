@@ -1,0 +1,2253 @@
+---
+title: "CPLN 675 - Urban Growth Modeling, 2022"
+author: "Alexander Nelms"
+date: "5/9/2022"
+output:
+  bookdown::html_document2:
+    code_folding: hide
+    fig_caption: yes
+    toc_depth: 2
+    toc: yes
+    toc_float: 
+      collapsed: false
+    number_sections: false
+editor_options: 
+  markdown: 
+    wrap: sentence
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+library(bookdown)
+knitr::opts_chunk$set(
+  include=TRUE,
+  echo=TRUE,
+  warning=FALSE,
+  messages=FALSE,
+  fig.width = 10,
+  fig.keep = 'all',
+  collapse=TRUE,
+  cache=TRUE, 
+  autodep=TRUE,
+  results=FALSE
+  )
+options(tigris_class = "sf")
+options(scipen = 999)
+# rmarkdown::render('index.Rmd', output_file='Nelms_SFPermitMetrics_Report.html')
+# bookdown::render_book('index.Rmd', 'bookdown::gitbook')
+```
+
+
+```{r load_packages, message=FALSE, warning=FALSE, include=FALSE}
+
+DIR = 'C:/Users/nelms/Documents/Penn/CPLN-675/HW5'
+setwd(DIR)
+
+library(tidyverse)
+library(sf)
+library(raster)
+library(knitr)
+library(kableExtra)
+library(tidycensus)
+library(tigris)
+library(FNN)
+#library(QuantPsyc) # JE Note: in R 4.1, QuantPsyc package not available.
+library(caret)
+library(yardstick)
+library(pscl)
+library(plotROC) 
+library(ggrepel)
+library(pROC)
+library(grid)
+library(gridExtra)
+library(viridis)
+library(igraph)
+library(cowplot)
+library(readxl)
+library(rgeos)
+library(flextable)
+library(glue)
+
+
+
+plotTheme = theme(
+  plot.title =element_text(size=12),
+  plot.subtitle = element_text(size=8),
+  plot.caption = element_text(size = 6),
+  axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+  axis.text.y = element_text(size = 10),
+  axis.title.y = element_text(size = 10),
+  # Set the entire chart region to blank
+  panel.background=element_blank(),
+  plot.background=element_blank(),
+  #panel.border=element_rect(colour="#F0F0F0"),
+  # Format the grid
+  panel.grid.major=element_line(colour="#D0D0D0",size=.75),
+  axis.ticks=element_blank())
+
+mapTheme = theme(plot.title =element_text(size=12),
+                  plot.subtitle = element_text(size=8),
+                  plot.caption = element_text(size = 6),
+                  axis.line=element_blank(),
+                  axis.text.x=element_blank(),
+                  axis.text.y=element_blank(),
+                  axis.ticks=element_blank(),
+                  axis.title.x=element_blank(),
+                  axis.title.y=element_blank(),
+                  panel.background=element_blank(),
+                  panel.border=element_blank(),
+                  panel.grid.major=element_line(colour = 'transparent'),
+                  panel.grid.minor=element_blank(),
+                  legend.direction = "vertical", 
+                  legend.position = "right",
+                  plot.margin = margin(1, 1, 1, 1, 'cm'),
+                  legend.key.height = unit(1, "cm"), legend.key.width = unit(0.2, "cm"))
+
+
+round_str = function(str_num, digits=3) str_num %>% 
+        as.numeric() %>%
+        round(digits) %>% 
+        as.character() %>% 
+        str_replace(., "^0\\.", ".") %>%
+        str_remove(., "0+$")
+
+count_format = 
+  function(col) format(col, digits=0, big.mark = ",")
+
+round_thresh = function(
+  field,
+  thresh = .001,
+  digits = 3,
+  int_check = FALSE
+  ){
+  
+  if(is.null(field)){return('NULL')}
+  if(is.na(field)){return('NA')}
+  
+  thresh_str = 
+    paste('<', round_str(thresh, digits=digits), sep=' ')
+  
+  field_num = field %>% as.numeric()
+  
+  field_str = 
+    ifelse(
+      abs(field_num) < thresh,
+      thresh_str,
+      ifelse(
+        (int_check == TRUE & abs(field_num) >= 1),
+        field_num %>% round_str(digits=0),
+        field_num %>% round_str(digits=digits)
+        ))
+  
+  return(field_str)
+}
+
+palette2 = c("#41b6c4","#253494")
+palette4 = c("#a1dab4","#41b6c4","#2c7fb8","#253494")
+palette5 = c("#ffffcc","#a1dab4","#41b6c4","#2c7fb8","#253494")
+palette10 = c("#f7fcf0","#e0f3db","#ccebc5","#a8ddb5","#7bccc4",
+               "#4eb3d3","#2b8cbe","#0868ac","#084081","#f7fcf0")
+```
+
+# 1. Introduction
+
+  Many urban processes don't obey borders. A commuter might cross multiple city & county boundaries in a single trip. When a young couple is looking to buy a house & start a family, they might not have specific preferences on which incorporated city they are in. Instead, they might consider the school district, housing prices, and where the future will treat them the best.
+
+  For many American regions, there isn't necessarily a single governing-body that sets policies for the entire region. The state is too large to focus on one single region. Counties and cities can only focus on their share of their region -- even if that means they make selfish policy decisions. So when these agencies get together to make a regional plan & prediction, it is a brief moment where all policy makers attempt to align their interests. 
+  
+  For the **San Francisco Bay Area**, this fractured policy-making has had drastic consequences. Each city has largely been conservative in allowing housing units to be built. Because of the lack of development across the board, there has been an extreme housing shortage -- leading to the region being a leader in housing price costs, homelessness per capita, and income inequality. The figure below visualizes the shortage of permitted units. [[source: Plan Bay Area 2040](http://2040.planbayarea.org/the-bay-area-today)]
+  
+```{r sf_permits, echo=FALSE, keep=TRUE, messages=FALSE, out.width='100%', results=TRUE}
+pic_path = 'FIGURE_1_2_Historical_Trend-DOWNLOAD.png'
+pic_path = paste0(DIR, "/visuals/", pic_path)
+knitr::include_graphics(pic_path)
+```
+  **Plan Bay Area 2040** (2013) was the most recent plan for the Bay Area. According to a recent review of the plan's projections [[source](https://mtc.ca.gov/sites/default/files/motm_5_17_18.pdf)], the 2040 housing unit targets have recently fallen flat. Based on the rate of housing growth in the last 10 years, San Francisco would meet their 2040 housing target in 2063. San Jose in 2066. Oakland in 2295.
+
+```{r load_data, message=FALSE, warning=FALSE, include=TRUE}
+CA_proj = st_crs('EPSG:2227')
+proj_crs = CA_proj
+
+path = 'data/sf_counties_clipped.geojson'
+
+sf.counties = 
+  st_read(path) %>% 
+  st_as_sf() %>%
+  mutate(
+    county.id = fipco,
+    geometry = geometry %>% st_make_valid()
+    ) %>%
+  dplyr::select(county.id) %>%
+  st_transform(CA_proj)
+
+sf.MSA = 
+  sf.counties %>%
+  mutate(ID=1) %>%
+  group_by(ID) %>%
+  summarize(geometry = st_union(geometry)) %>%
+  st_transform(CA_proj)
+  #st_transform('ESRI:102741') # JE Note: added 'ESRI:' in front of projection
+
+sf.extent = sf.MSA %>% extent()
+sf.bbox = sf.MSA %>% st_bbox() %>% st_as_sfc()
+
+
+from = c("001", "013", "041", "055", "075", "081", "085", "095", "097")
+to = c("Alameda", "Contra Costa", "Marin", "Napa", "San Francisco", "San Mateo", "Santa Clara", "Solano", "Sonoma")
+
+replace_list = function(target_list, from, to){
+  lookup = data.frame(from = from, to = to)
+  return(lookup$to[match(unlist(target_list), lookup$from)])
+}
+
+sf.counties$name = replace_list(sf.counties$county.id, from, to)
+
+geom_county = function(
+  data = sf.counties,
+  county = 'All',
+  fill = 'transparent', color='black',
+  lwd=.5, ...
+  ){
+  focus_county = data
+  if (county != 'All'){
+    focus_county = 
+      focus_county %>% 
+        filter(name==county)}
+    c_plot = 
+      geom_sf(
+        data = focus_county, 
+        fill = fill, 
+        color=color,
+          lwd=lwd, ...)
+    return(c_plot)}
+
+# plot text 
+geom_text_sf = function(
+  sf.focus.labels,
+  fontface='bold', color='black', check_overlap = TRUE,
+  ...
+){
+  labels = 
+    geom_text(
+        data=sf.focus.labels, check_overlap=check_overlap,
+        fontface=fontface, color=color,
+        aes(x=lon,y=lat, label=label), ...)
+  return(labels)}
+
+# turn sf polys to label
+
+sf_to_labels = function(
+  sf_focus, label_field
+){
+  sf.focus.labels = 
+    sf_focus %>%
+    st_centroid(., of_largest_polygon = TRUE) %>% 
+    mutate(
+      lon = 
+        map_dbl(
+          geometry,
+          ~st_centroid(.x, 
+                       of_largest_polygon = TRUE,
+                       quiet = TRUE,)[[1]]),
+      lat = 
+        map_dbl(
+          geometry, 
+          ~st_centroid(.x, 
+                       of_largest_polygon = TRUE, 
+                       quiet = TRUE,)[[2]])
+    )
+  sf.focus.labels$label = sf.focus.labels[[label_field]]
+  return(sf.focus.labels %>% dplyr::select(label, lon, lat))
+}
+
+get_first_letter = function(string, sec=1){
+  substring(string, 1, sec)
+}
+get_first_letters = function(full_string){
+  string_list = strsplit(full_string," ")
+  strings = sapply(string_list, function(strs){ 
+    sec = 1
+    if (lengths(string_list)==1){
+      sec=3
+    }
+    get_first_letter(strs, sec=sec)})
+  strings = 
+    paste(strings, collapse="")
+  return(strings)
+}
+
+sf.counties_labels = 
+  sf.counties %>% 
+  mutate(name = sapply(name, function(strss) get_first_letters(strss)))
+
+geom_county_text = function(
+  data = sf.counties_labels,
+  size=3
+  ){
+  geom_text_sf(
+    sf_to_labels(
+      data,'name'),
+    size = size)
+}
+
+
+ggplot() +
+  geom_sf(data=sf.counties, aes(fill=name)) +
+  geom_county_text() + 
+  geom_county() +
+  #geom_county(county='San Francisco') + 
+  labs(title = "Map 1.1: Bay Area Counties") +
+  mapTheme
+```
+
+
+## 1.1. Report Contents
+
+  With Plan Bay Area 2040 in mind, this report will help understand how *(and where)* San Francisco has developed in the last 20 years. Specifically this report will be split into 4 sections to both understand and re-predict development:
+
+**Section 1.** Visualizing 2001, 2009, & 2019 land-use & change
+
+**Section 2.** Predict Land-Use Change from 2009 to 2019
+
+**Section 3.** Scenario 1: What would development look based on 2030 population predictions?
+
+**Section 4.** Scenario 2: What if Bay Area Regional Transit was expanded before 2019?
+
+
+```{r plot_functions, warning = FALSE, message = FALSE}
+#this function converts a column in to quintiles. It is used for mapping.
+quintileBreaks = function(df,variable) {
+    as.character(quantile(df[[variable]],
+                          c(.01,.2,.4,.6,.8),na.rm=T))
+}
+
+#This function can be used to convert a polygon sf to centroids xy coords.
+xyC = function(aPolygonSF) {
+  as.data.frame(
+    cbind(x=st_coordinates(st_centroid(aPolygonSF))[,1],
+          y=st_coordinates(st_centroid(aPolygonSF))[,2]))
+} 
+
+#this function convert a raster to a data frame so it can be plotted in ggplot
+rast = function(inRaster) {
+  data.frame(
+    xyFromCell(inRaster, 1:ncell(inRaster)), 
+    value = getValues(inRaster)) }
+
+# rename first col of dataframe
+rename_first_col = function(focus_sf, new_name, col_idx = 1){
+  names(focus_sf)[names(focus_sf) == names(focus_sf)[col_idx]] = new_name
+  return(focus_sf)
+}
+
+# remove duplicate cols during a join
+## if i do the same join twice
+select_not_cols = function(focus_sf, bad_cols){
+  bad_cols = c(bad_cols)
+  cols = colnames(focus_sf)
+  cols = cols[!(cols %in% bad_cols)]
+  return(focus_sf %>% dplyr::select(cols))
+}
+
+# raster to fishnet sf
+raster_to_fishnet = function(focus_raster){
+  focus_raster %>%
+  #as.polygons() %>%
+  rasterToPolygons(., n=4, na.rm=FALSE, dissolve=FALSE) %>%
+  st_as_sf(., crs=CA_proj)
+}
+
+# raster to centroid sf
+raster_to_centroid = function(focus_raster){
+  focus_raster %>%
+    rasterToPoints(.) %>%
+    as.data.frame() %>%
+    st_as_sf(coords = c("x", "y"), crs = CA_proj)
+}
+
+# spatial join but turns into a col for left sf
+st_join_as_col = function(left_sf, right_df, right_col){
+  st_join(
+    # main sf (that will get right col)
+    ## removes duplicate cols (if equals right col)
+    left_sf %>%
+      select_not_cols(., right_col),
+    right_df
+  ) %>%
+  st_drop_geometry() %>%
+  # only look at right col
+  pull(right_col)
+}
+```
+
+
+## 1.2. Land Cover Change Data
+
+  The main focus for the report is the Bay Area's land cover and how it has *(and hasn't)* change from 2009 to 2019. The USGS' National Land Cover Database (NLCD) didn't provide a land cover survey for 2009 [[source](https://www.usgs.gov/centers/eros/science/national-land-cover-database#overview)]. However, the State of California's 4th Climate Assessment set out to 'backfill' the missing years of the NLCD by using the USGS' own LUCAS model to find California estimates of the missing years [[source](https://www.sciencebase.gov/catalog/item/587fb408e4b085de6c11f389)].
+
+### Land Covers 2001, 2009, 2019
+
+  Fortunately for this report, I was able to access land covers for 2001, 2009, and 2019. Another interesting aspect of these datasets is that the cell size is much larger (1,000 meters x 1,00 meters [3280ft]) than the typical NLCD survey (30 meters x 30 meters). In many projections, a finer data reference can provide a more accurate prediction; however, my study would benefit from a larger scope:
+  - The reference datasets *(e.g. Census Tract Interpolations, Transit Routes)* best provide insight on the neighborhood level
+  - Multiple, granular rasters can get fairly data-intensive & disorganized. Which might hurt a surface level prediction like this report 
+  - The larger scale could provide better generalization as it won't hone in on isolated, irregular land uses *(e.g. a park in the middle of a city)*
+
+
+```{r lc_raster_import}
+
+LC_DIR = 'data/sf_land_cover_project'
+
+lc_year_path = function(year, folder = paste(DIR, LC_DIR, sep='/'))
+{
+  year = year %>% as.character()
+  path = paste('sf', year, 'land_cover.tif', sep='_') %>%
+    paste(folder, ., sep='/')
+  return (path)}
+
+raster_download = function(year){
+  lc_year_path(year) %>%
+    raster(.) #%>%
+    #projectRaster(., crs = CA_proj$proj4string)
+}
+
+raster_crop = function(focus_geom, extent_geom=sf.extent, reference_geom=sf.MSA){
+  focus_geom %>%  
+    crop(., extent_geom) %>%
+    mask(., reference_geom)
+}
+
+sf.lc.2001 = 
+  raster_download(2001) %>%
+  raster_crop(.)
+
+sf.lc.2009 = 
+  raster_download(2009) %>%
+  raster_crop(.)
+
+sf.lc.2019 = 
+  raster_download(2019) %>%
+  raster_crop(.)
+
+ggplot() +
+  geom_raster(data=rast(sf.lc.2019) %>% na.omit %>% filter(value > 0), 
+              aes(x,y,fill=as.factor(value))) +
+  scale_fill_viridis(discrete=TRUE, name ="") +
+  geom_county() + 
+  labs(title = "Map 1.2: Land Cover, 2019", subtitle='SF Bay Area') +
+  mapTheme #+
+  #theme(legend.direction="horizontal")
+
+```
+
+  Looking at Map 1.2, you can see the 2019 Land Cover for the Bay Area. As you can probably guess, classification 21 is developed areas. It is also interesting how stagnated the developed and undeveloped areas are. Besides the natural geographic borders, the Bay Area has numerous nature conservancies, parks, and land trusts that surround the developed areas -- forming an informal urban growth boundary. This lack of room to grow will be an ongoing narrative in this report.
+
+*(Mapper's Note: I reclassified some Land Covers in ArcGIS [e.g. made classes 21-24 all 21] so it would be easier to filter)*
+
+
+```{r rast_to_fishnet}
+
+# fishnet from land change raster
+sf.fish = 
+  # land change raster
+  sf.lc.2001 %>%
+  raster_to_fishnet() %>%
+  rename_first_col(., 'lc.2001') %>%
+  #filter(!is.na(lc.2001)) %>%
+  # get id for fishnet
+  rownames_to_column("id.fishnet") %>% 
+  mutate(id.fishnet = as.numeric(id.fishnet)) %>%
+  # as sf with the main projection
+  st_sf(., crs=CA_proj)
+
+sf.fish$id.county = 
+  st_join_as_col(
+    sf.fish %>%
+      st_centroid(), 
+    sf.counties %>%
+      dplyr::select(name),
+    'name'
+    )
+
+sf.fish = 
+  sf.fish %>% 
+  filter(!is.na(id.county))
+
+# add raster to col
+add_raster_as_col = function(
+  # raster
+  focus_raster, 
+  # focus col to rename in raster 
+  # & add to focus_fishnet as column
+  focus_col, 
+  focus_fishnet=sf.fish){
+  st_join_as_col(
+    focus_fishnet, 
+    focus_raster %>% 
+      raster_to_centroid() %>%
+      rename_first_col(., focus_col),
+    focus_col
+    )
+}
+
+sf.fish$lc.2001 = add_raster_as_col(sf.lc.2001, 'lc.2001')
+sf.fish$lc.2009 = add_raster_as_col(sf.lc.2009, 'lc.2009')
+sf.fish$lc.2019 = add_raster_as_col(sf.lc.2019, 'lc.2019')
+
+```
+  
+Map 1.3 displays those Land Cover Classifications as a binary of *developed* or *non-developed*. The 'unofficial urban growth boundaries' are more noticeable. Especially in San Mateo County (SM), where the peninsula appears to be split in half by preserves. Other noticeable counties are Marin (Mar), Sonoma (Son), and Napa (Nap) which have a fairly large share of undeveloped land -- especially compared to San Francisco's (SF) nearly 100% developed land. 
+
+```{r lc_dev_plot}
+
+get_dev_col = function(
+  focus_col,
+  focus_sf = sf.fish,
+  dev_lc = c(21,22,23,24),
+  dev = 1,
+  nondev = 0
+    ){
+  new_col = focus_sf[[focus_col]]
+  new_col[!(new_col %in% dev_lc)] = nondev
+  new_col[new_col %in% dev_lc] = dev
+  return (new_col)
+  }
+
+sf.fish$dev.2001 = get_dev_col('lc.2001')
+sf.fish$dev.2009 = get_dev_col('lc.2009')
+sf.fish$dev.2019 = get_dev_col('lc.2019')
+
+ggplot() + 
+  geom_sf(
+    data=sf.fish, 
+    aes(fill=dev.2019 %>% as.factor()),
+    color=NA
+    ) +
+  geom_county(alpha=.5, fill=NA) + 
+  geom_county_text() + 
+  labs(title = 'Map 1.3: Developed Areas (2019)', subtitle='SF Bay Area') + 
+  mapTheme + 
+  theme()  +
+  theme(legend.position = "none")
+
+```
+  
+### Land Cover Change, 2009 to 2019
+
+  With the 2019 Land Cover in mind, let's look at how it changed in 10 years. Map 1.4 highlights the new developments . . . the very few of them. It is difficult to full find spatial patterns but they are there. Most of the developments are happing on the urban fringes and along federal highways. With the little amount of developments, it will pose an issue gathering accurate predictors.
+
+```{r lc_change_col}
+
+if_lc_same = function(firstcol,secondcol){
+  ifelse(
+    firstcol == secondcol,
+    0,1) %>%
+    unname()}
+
+sf.fish$dev_ch.01_09 = if_lc_same(sf.fish$dev.2001, sf.fish$dev.2009)
+#sf.fish$dev_ch.01_19 = if_lc_same(sf.fish$dev.2001, sf.fish$dev.2019)
+sf.fish$dev_ch.09_19 = if_lc_same(sf.fish$dev.2009, sf.fish$dev.2019)
+
+ggplot() + 
+  geom_sf(data=sf.fish %>% st_centroid(), 
+             aes(#x=xyC(sf.lc.00_19)$x, y=xyC(sf.lc.00_19)$y, 
+                 colour=dev_ch.09_19 %>% as.factor())) +
+  scale_color_manual(
+    values = c('#FFFFFF', '#FF0000'),
+    labels=c("No Change","Newly Developed"),
+                       name="") +
+  geom_county(alpha=.5, fill=NA) + 
+  geom_county_text() + 
+  labs(title = 'Map 1.4: Newly Developed Areas (2010 to 2019)', subtitle='SF Bay Area') + 
+  mapTheme  #+
+  #theme(legend.position = "none")
+
+```
+
+Map 1.5 breaks down how this land cover is broken up. 
+
+```{r lc_agg_col, echo=TRUE, message=FALSE, warning=FALSE}
+
+aggregateRaster <- function(inputRasterList, theFishnet) {
+  #create an empty fishnet with the same dimensions as the input fishnet
+  theseFishnets <- theFishnet %>% dplyr::select()
+  #for each raster in the raster list
+  for (i in inputRasterList) {
+  #create a variable name corresponding to the ith raster
+  varName <- names(i)
+  #convert raster to points as an sf
+    thesePoints <-
+      rasterToPoints(i) %>%
+      as.data.frame() %>%
+      st_as_sf(coords = c("x", "y"), crs = st_crs(theFishnet)) %>%
+      filter(.[[1]] == 1)
+  #aggregate to the fishnet
+    thisFishnet <-
+      aggregate(thesePoints, theFishnet, length) %>%
+      mutate(!!varName := ifelse(is.na(.[[1]]),0,1))
+  #add to the larger fishnet
+    theseFishnets <- cbind(theseFishnets,thisFishnet)
+  }
+  #output all aggregates as one large fishnet
+   return(theseFishnets)
+}
+
+agg_raster = function(lc_raster, focus_fishnet=sf.fish){
+  developed = lc_raster == 21 | lc_raster == 22 | lc_raster == 23 | lc_raster == 24
+  forest = lc_raster == 41 | lc_raster == 42 | lc_raster == 43 
+  farm = lc_raster == 81 | lc_raster == 82 
+  wetlands = lc_raster == 90 | lc_raster == 95 
+  otherUndeveloped = lc_raster == 52 | lc_raster == 71 | lc_raster == 31 
+  water = lc_raster == 11
+  
+  names(developed) = "developed"
+  names(forest) = "forest"
+  names(farm) = "farm"
+  names(wetlands) = "wetlands"
+  names(otherUndeveloped) = "otherUndeveloped"
+  names(water) = "water"
+  
+  lc.agg = c(developed,forest,farm,wetlands,otherUndeveloped,water)
+  
+  agg_raster =
+    aggregateRaster(lc.agg, focus_fishnet) %>%
+    mutate_if(is.numeric,as.factor)
+  return(agg_raster)
+}
+
+sf.agg.2001 = agg_raster(sf.lc.2001)
+sf.agg.2009 = agg_raster(sf.lc.2009)
+sf.agg.2019 = agg_raster(sf.lc.2019)
+
+sf.agg.2009 %>%
+  gather(var,value,developed:water) %>%
+  st_cast("POLYGON") %>%    #just to make sure no weird geometries slipped in
+  mutate(X = xyC(.)$x,
+         Y = xyC(.)$y) %>%
+  ggplot(.) +
+    geom_sf(data=sf.MSA) +
+    geom_point(aes(X,Y, colour=as.factor(value))) +
+    #geom_sf(data=sf.lc.00_19 %>% na.omit %>% filter(sf.lc.00_19==1), 
+    #        color='red', fill=NA) +
+    facet_wrap(~var) +
+    scale_colour_manual(values = palette2,
+                        labels=c("Other","Land Cover"),
+                        name = "") +
+    labs(title = "Map 1.5: Land Cover Types, 2009",
+         subtitle = "As fishnet centroids") +
+   mapTheme
+
+```
+
+
+## 1.3. Population Data (2000, 2010, & 2019)
+
+  The next step is understanding how those areas have been populated. So we will bring in Decennial & ACS Census Tracts of population.
+  
+  Map 1.6 highlights both a visualization of the 2019 population and how the census tract data (1.6A) is attached to our raster/fishnets (1.6B)S. The tracts highlight the changes in population in short distances -- as a result of inconsistent densities *and* census boundaries. By 'interpolating' the census tract data to a 'heat map', we can better capture a smoothed out population estimation in our fishnets. The fishnets, based on the 1000 meter raster, provide even boundaries to compare data over time and geographies.
+
+```{r sf_bay_counties, warning = FALSE, message = FALSE, results = "hide"}
+sf_bay.counties = 
+  c(
+    "Alameda", "Contra Costa", "Marin", 
+    "Napa", "San Francisco", "San Mateo",
+    "Santa Clara", "Solano", "Sonoma"
+                  )
+
+path_pop_00 = 'data/census/sf_pop_blockgroup_2000.geojson'
+sf.pop.00 = 
+  st_read(path_pop_00)
+  # get_decennial(geography = "block group", variables = "P001001", year = 2000,
+  #               state = 06, geometry = TRUE, 
+  #               county=sf_bay.counties
+  #               ) %>%
+  # rename(pop.2000 = value) %>%
+  # st_transform(CA_proj)
+#sf.pop.00 %>% st_write(path_pop_00)
+
+path_pop_10 = 'data/census/sf_pop_blockgroup_2010.geojson'
+sf.pop.10 = 
+  st_read(path_pop_10)
+  # get_decennial(geography = "block group", variables = "P001001", year = 2010,
+  #               state = 06, geometry = TRUE, 
+  #               county=sf_bay.counties) %>%
+  # rename(pop.2010 = value) %>%
+  # st_transform(CA_proj) %>%
+  # st_buffer(-1)
+#sf.pop.10 %>% st_write(path_pop_10)
+
+# Specify which variable(s) you would like to grab. Here, only one (Total Population) is listed, but you could add more to the call.
+acs_vars = c("B02001_001E")
+
+# Using "tract" as the geography and 2019 as the year, download data data for the Bay Area MSA counties listed.
+sf.pop.19 = get_acs(geography = "tract", 
+                        variables = acs_vars, 
+                        year = 2019,
+                        state = 06, 
+                        geometry = TRUE, 
+                        #output = "wide",
+                        county=sf_bay.counties) %>%
+                transmute(pop.2019 = estimate) %>%
+  st_transform(CA_proj) %>%
+  st_buffer(-1) 
+
+get_demo_col = function(focus_demo, focus_sf=sf.fish){
+  focus_demo_col = 
+    st_interpolate_aw(
+      focus_demo, 
+      focus_sf, 
+      extensive=TRUE,keep_NA=TRUE
+      ) %>%
+    st_drop_geometry()
+  focus_demo_col[is.na(focus_demo_col)] = 0
+  return(focus_demo_col %>% pull(1))
+  }
+
+sf.fish$pop.00 = get_demo_col(sf.pop.00["pop.2000"])
+sf.fish$pop.10 = get_demo_col(sf.pop.10["pop.2010"])
+sf.fish$pop.19 = get_demo_col(sf.pop.19["pop.2019"])
+
+sf.fish$pop_pct_ch.00_10 = (sf.fish$pop.10-sf.fish$pop.00)/sf.fish$pop.10
+sf.fish$pop_pct_ch.10_19 = (sf.fish$pop.19-sf.fish$pop.10)/sf.fish$pop.19
+
+sf.fish[is.na(sf.fish$pop_pct_ch.00_10)|mapply(is.infinite,sf.fish$pop_pct_ch.00_10), 'pop_pct_ch.00_10'] = 0
+sf.fish[is.na(sf.fish$pop_pct_ch.10_19)|mapply(is.infinite,sf.fish$pop_pct_ch.10_19), 'pop_pct_ch.10_19'] = 0
+
+rm(sf.pop_fish.00)
+rm(sf.pop_fish.10)
+
+grid.arrange(
+  ggplot() +
+    geom_sf(data=sf.pop.19, aes(fill=factor(ntile(pop.2019,5))),colour=NA) +
+    scale_fill_manual(values = palette5,
+                      labels=substr(quintileBreaks(sf.pop.19,"pop.2019"),1,4),
+                     name="Quintile\nBreaks") +
+    labs(title="Map 1.6A: Population, Bay Area MSA: 2019",
+         subtitle="Represented as tracts; Boundaries omitted") +
+    mapTheme,
+  
+  ggplot() +
+    geom_sf(data=sf.fish, aes(fill=factor(ntile(pop.19,5))),colour=NA) +
+    scale_fill_manual(values = palette5,
+                     labels=substr(quintileBreaks(sf.fish,"pop.19"),1,4),
+                     name="Quintile\nBreaks") +
+    labs(title="Map 1.6B: Population, Bay Area MSA: 2019",
+         subtitle="Represented as fishnet gridcells; Boundaries omitted") +
+    mapTheme, 
+  ncol=2)
+
+# rm(sf.pop.00)
+# rm(sf.pop.10)
+```
+
+
+Maps 1.7 show how the population was distributed in 2000 & 2010. 
+
+
+```{r pop_0010_map, warning = FALSE, message = FALSE, fig.height= 8, fig.width= 11}
+
+
+pbreaks = c(0,500, 1000, 1500, 2500, 30000)
+plabs = c('0','500','1000', '1500', '2500')
+grid.arrange(
+  ggplot() +
+    geom_sf(data = sf.pop.00, aes(fill=factor(cut(pop.2000, breaks=pbreaks))), colour=NA) +
+    scale_fill_manual(values = palette5,
+                      labels=plabs,
+                     name="Quintile\nBreaks") +
+    labs(title="Map 1.7A: Population, Bay Area MSA: 2000") +
+    mapTheme,
+  #factor(ntile(pop.2010,5)))
+  ggplot() +
+    geom_sf(
+      data = sf.pop.10, 
+      aes(fill=factor(cut(pop.2010, breaks=pbreaks))), colour=NA) +
+    scale_fill_manual(values = palette5,
+                      labels=plabs,
+                     name="Quintile\nBreaks") +
+    labs(title="Map 1.7B Population, Bay Area MSA: 2010") +
+  mapTheme, ncol=2)
+```
+
+## 1.4 Transit Stops & Routes (2008 & 2021)
+
+  Inconsistent boundaries and values are a common theme with Bay Area governance -- especially with the 27 transit agencies operating across 9 counties [[source](https://www.mercurynews.com/2021/04/17/borenstein-27-bay-area-transit-agencies-no-wonder-travel-is-so-hard/)]. 
+
+  Map 1.8 highlights the inconsistency of the transit agencies with every color representing a different transit operator. This balkanization has made it difficult to coordinate the addition of Transit Oriented Developments and *density in general*. Outside of the Bay Area Rapid Transit's (BART) immediate reach of San Francisco & Oakland, it is very difficult to navigate the city without cars. Even though other counties have some form of light rail and commuter rail, the lack of connectivity makes a transit line near impotent. So even SF & East Bay areas with a BART station still have to drive to South & North Bay. 
+
+```{r transit_routes, warning = FALSE, message = FALSE, results = "asis", fig.width=8}
+
+TRANS_DIR = paste(DIR, 'data/trans', sep='/')
+
+bad.transit = c('Ferry', 'Cable car')
+
+path = "transit_routes_2008/sf_routes_2008.shp" %>%
+    paste(TRANS_DIR, ., sep='/') 
+sf.troutes.2008 = 
+  st_read(path) %>%
+  transmute(
+    route.type = ifelse(CLASS%in%c("Rapid Rail", "Commuter Rail"), 'Rail', CLASS), 
+    route.agency = AGENCYNAME) %>%
+  filter(!(route.type %in% bad.transit)) %>%
+  st_transform(proj_crs) %>%
+  mutate(year = 2008)
+
+path = "transit_routes_2021/sf_routes_2021.shp" %>%
+    paste(TRANS_DIR, ., sep='/') 
+sf.troutes.2021 = 
+  st_read(path) %>%
+  transmute(route.type = ifelse(
+    route_type=="Tram, Streetcar, Light rail", 'Light Rail', 
+      route_type), 
+    route.agency = agency_nm) %>%
+  filter(!(route.type %in% bad.transit)) %>%
+  st_transform(proj_crs) %>%
+  mutate(year = 2021)
+
+sf.troutes = 
+  rbind(
+    sf.troutes.2008,
+    sf.troutes.2021
+  )  %>%
+  st_intersection(sf.counties)
+
+
+ggplot() +
+  geom_county(color='lightgrey') + 
+  geom_sf(data=sf.troutes, aes(color=route.agency), show.legend = FALSE) + 
+  facet_wrap(year~route.type, ncol=3) +
+  labs(title = "Map 1.8: Bay Area Transit Routes", subtitle = 'Bus, Light Rail, Heavy Rail (BART, CalTrain), & Commuter Rail (Amtrak)') + 
+  mapTheme
+
+# sf.troutes.2008 = sf.troutes %>% 
+#   filter(year==2008) %>%
+#   as_Spatial(.) %>%
+#   gBuffer(., byid=F, width=20) %>%
+#   st_as_sf(.)
+# sf.troutes.2021 = sf.troutes %>% 
+#   filter(year==2021) %>%
+#   as_Spatial(.) %>%
+#   gBuffer(., byid=F, width=20) %>%
+#   st_as_sf(.)
+
+```
+
+Map 1.9 highlights how spread & disconnected rail stations and urban areas are. By 2021, there is recently a connect from East Bay to South Bay. But there still isn't any rail connectivity to North Bay
+
+```{r transit_stops}
+
+bad.stations = c(NA, "Cable Tram", "Bus", "BRT", "Ferry", "Municipal Airport", "International Airport", "Ferry Terminal", "Military Airport")
+
+
+TRANS_DIR = paste(DIR, 'data/trans', sep='/')
+
+path = "transit_stations_2008/sf_stations_2008.shp" %>%
+    paste(TRANS_DIR, ., sep='/') 
+sf.stations.2008 = 
+  st_read(path) %>%
+  filter(!(CLASS %in% bad.stations)) %>%
+  transmute(
+    route.type = ifelse(
+      CLASS %in% c("Light Rail Station"), 'Light Rail', 
+      ifelse(
+        CLASS %in% c("Rapid Rail Station", "Commuter Rail Station"), "Rail", 
+        CLASS
+      )),
+  ) %>%
+  mutate(year = 2008)
+
+path = "transit_stations_2021/sf_stations_2021.shp" %>%
+    paste(TRANS_DIR, ., sep='/') 
+sf.stations.2021 = 
+  st_read(path) %>%
+  filter(!(route_type %in% bad.stations)) %>%
+  transmute(
+    route.type = ifelse(
+      route_type%in%c("Tram, Streetcar, Light Rail"), 'Light Rail', 
+      route_type),
+  ) %>%
+  mutate(year = 2021)
+
+sf.stations = 
+  rbind(
+    sf.stations.2008,
+    sf.stations.2021
+  ) %>%
+  st_transform(proj_crs) %>%
+  st_intersection(sf.counties)
+
+sf.stations.2008 = sf.stations %>% 
+  filter(year==2008)%>% 
+  filter(route.type!='Bus') %>%
+  #as_Spatial(.) %>%
+  #gBuffer(., byid=F, width=20) %>%
+  st_buffer(100) %>%
+  st_union(.) %>%
+  st_as_sf(.)
+sf.stations.2021 = sf.stations %>% 
+  filter(year==2021) %>% 
+  filter(route.type!='Bus') %>%
+  #as_Spatial(.) %>%
+  #gBuffer(., byid=F, width=20) %>%
+  st_buffer(100) %>%
+  st_union(.) %>%
+  st_as_sf(.)
+
+ggplot() +
+  geom_county(color='lightgrey') + 
+  #geom_sf(data=sf.troutes %>% filter(route.type!='Bus'), aes(color=route.type), show.legend = FALSE) + 
+  geom_sf(data=sf.stations, aes(color=route.type), show.legend = FALSE, size=1) + 
+  facet_wrap(~year) +
+  labs(title = "Map 1.9: Bay Area Rail Stations", subtitle = 'Light Rail, Heavy Rail (BART, CalTrain), & Commuter Rail (Amtrak)') + 
+  mapTheme
+
+```
+
+
+## 1.5. Highways (2020)
+
+Map 1.10 highlights the federal and state highways that connect the bay area. For many commuters, this is their main option. This reliance on highways and the housing shortage has promoted bedroom communities leapfrog developments *(over the natural preserves)*. This could explain the few developments we observed from 2009 to 2019. 
+
+Like many of the datasets, these highways came from the Metropolitan Transportation Commission's Open Data
+[[source](https://opendata.mtc.ca.gov/datasets/MTC::san-francisco-bay-region-roadways/explore?location=37.871686%2C-122.367566%2C8.69)]
+
+```{r hwy_import, warning = FALSE, message = FALSE, results = "hide"}
+
+TRANS_DIR = paste(DIR, 'data/trans', sep='/')
+
+path =
+  "roadways_2021/sf_roadways.shp" %>%
+  paste(TRANS_DIR, ., sep='/')
+
+hwy.fed = c('I', 'U')
+hwy.state = c('S')
+hwy.types = c(hwy.fed, hwy.state)
+
+#Route Type Code
+#C	County
+#I	Interstate
+#M	Common Name
+#O	Other
+#S	State recognized
+#U	U.S.
+## https://www.census.gov/library/reference/code-lists/route-type-codes.html
+
+hwy.avg_lane_width = 13 #feet
+hwy.fed_lanes = 6
+hwy.state_lanes = 3
+
+sf.hwy =
+  st_read(path) %>%
+  st_transform(proj_crs)%>% 
+  filter(!is.na(rttyp), rttyp %in% hwy.types) %>% 
+  mutate(
+    hwy.type = ifelse(
+      rttyp %in% hwy.fed, 'Federal',
+      'State'
+    )
+  ) %>%
+  group_by(hwy.type) %>%
+  summarize(geometry = st_union(geometry)) %>%
+  mutate(
+    geometry = geometry %>%
+      st_buffer(ifelse(
+        hwy.type == 'Federal', hwy.avg_lane_width * hwy.fed_lanes,
+        hwy.avg_lane_width * hwy.state_lanes
+      ))
+  )
+
+ggplot() +
+  geom_county() + 
+  geom_sf(data=sf.hwy, aes(color=hwy.type)) + 
+  labs(title = "Map 1.10: Bay Area Highways", subtitle = 'Federal & State Highways') +
+  mapTheme
+
+```
+
+After importing in those three transporation datasets, we will then determine the distance between them and the fishnets. Map 1.11 highlights how the distance was found between the federal highways and the main fishnet dataset. 
+
+```{r transpo_distances, warning = FALSE, message = FALSE}
+
+emptyRaster = sf.lc.2001
+emptyRaster[] = NA
+
+get_dist_raster = function(focus_df, focus_fishnet=sf.fish){
+  highway_raster <- 
+    focus_df %>%
+    as(.,'Spatial') %>%
+    rasterize(., emptyRaster)
+  
+  highway_raster_distance <- distance(highway_raster)
+  names(highway_raster_distance) <- "distance_highways"
+  
+  highwayPoints <-
+    rasterToPoints(highway_raster_distance) %>%
+     as_tibble(.) %>%
+     st_as_sf(coords = c("x", "y"), crs = proj_crs)
+
+  highwayPoints_fishnet <-
+    aggregate(highwayPoints, focus_fishnet, mean) %>%
+    mutate(distance_highways = ifelse(is.na(distance_highways),0,distance_highways))
+  return(
+    highwayPoints_fishnet %>%
+      st_drop_geometry() %>%
+      pull(distance_highways)
+           )
+  }
+
+path = paste(DIR, 'data/sf_transpo_fishnets/sf_transpo_fishnets.geojson', sep='/')
+# sf.fish %>%
+#   dplyr::select(c(
+#     id.fishnet, hwy.fed, rail.2008, rail.2021
+#   )) %>%
+#   st_write(path)
+sf.transpo = st_read(path)
+
+# sf.fish$hwy.state = 
+#   add_raster_as_col(get_dist_raster(sf.hwy), 'hwy.state')
+sf.fish$hwy.fed = sf.transpo$hwy.fed
+  # sf.hwy %>% 
+  # st_sf(.) %>% 
+  # filter(hwy.type=='Federal') %>%
+  # dplyr::select(-hwy.type, geometry) %>%
+  # get_dist_raster(.)
+
+# sf.fish$bus.2008 =
+#   sf.troutes.2008 %>%
+#   #filter(year==2008, route.type== 'Bus') %>%
+#   add_raster_as_col(get_dist_raster(.), 'bus.2008')
+# sf.fish$bus.2021 =
+#   sf.troutes %>%
+#   #filter(year==2021, route.type== 'Bus') %>%
+#   add_raster_as_col(get_dist_raster(.), 'bus.2021')
+
+sf.fish$rail.2008 = sf.transpo$rail.2008
+  # sf.stations.2008 %>% 
+  # transmute(geometry=x) %>%
+  # st_sf(.,sf_column_name='geometry') %>% 
+  # dplyr::select(geometry) %>%
+  # #filter(year==2008) %>%
+  # get_dist_raster(.)
+sf.fish$rail.2021 = sf.transpo$rail.2021
+  # sf.stations.2021 %>% 
+  # transmute(geometry=x) %>%
+  # st_sf(.,sf_column_name='geometry') %>% 
+  # dplyr::select(geometry) %>%
+  # #filter(year==2021) %>%
+  # get_dist_raster(.)
+
+rm(sf.transpo)
+
+ggplot() +
+  geom_point(
+    data=sf.fish, 
+    aes(x=xyC(sf.fish)[,1], y=xyC(sf.fish)[,2], 
+                 colour=factor(ntile(hwy.fed,5))),size=1.5) +
+  scale_colour_manual(values = palette5,
+                      labels=substr(quintileBreaks(sf.fish,"hwy.fed"),1,8),
+                      name="Quintile\nBreaks") +
+  geom_sf(data=sf.troutes %>% filter(route.type!='Bus'), colour = "red") +
+  geom_county() + 
+  labs(title = "Map 1.11: Distance to Highways",
+       subtitle = "As fishnet centroids; Highways visualized in red") +
+  mapTheme
+
+```
+
+## 1.6. The Spatial Lag of Development
+
+  As we get closer to predicting where the developments happened, an important dataset is getting the 'spatial lag' of where those developments took place. Spatial lag can come in a few forms; but for our analysis, we will be looking at the two *nearest neighbor's* values of each fishnet cell.  As depicted in Map 1.12, spatial lag allows our model to consider the neighboring cell's values when trying to form a prediction.  
+
+```{r, warning = FALSE, message = FALSE}
+nn_function = function(measureFrom,measureTo,k) {
+  #convert the sf layers to matrices
+  measureFrom_Matrix =
+    as.matrix(measureFrom)
+  measureTo_Matrix =
+    as.matrix(measureTo)
+  nn =   
+    get.knnx(measureTo, measureFrom, k)$nn.dist
+    output =
+    as.data.frame(nn) %>%
+    rownames_to_column(var = "thisPoint") %>%
+    gather(points, point_distance, V1:ncol(.)) %>%
+    arrange(as.numeric(thisPoint)) %>%
+    group_by(thisPoint) %>%
+    summarize(pointDistance = mean(point_distance)) %>%
+    arrange(as.numeric(thisPoint)) %>% 
+    dplyr::select(-thisPoint) %>%
+    pull()
+  
+  return(output)  
+}
+
+nn_dev_year = function(focus_agg_raster, focus_fishnet=sf.fish, k=2){
+  nn_function(
+    xyC(focus_fishnet),
+    xyC(focus_agg_raster %>% filter(developed==1)),
+    k)
+}
+
+sf.fish$dev.lag.2001 = nn_dev_year(sf.agg.2001)
+sf.fish$dev.lag.2009 = nn_dev_year(sf.agg.2009)
+sf.fish$dev.lag.2019 = nn_dev_year(sf.agg.2019)
+    
+
+ggplot() +
+  geom_sf(data=sf.MSA) +
+  geom_point(data=sf.fish, 
+             aes(x=xyC(sf.fish)[,1], y=xyC(sf.fish)[,2], 
+                 colour=factor(ntile(dev.lag.2019,5))), size=1.5) +
+  scale_colour_manual(
+    values = palette5,
+    labels=substr(quintileBreaks(sf.fish,"lag.dev.2009"),1,7),
+                     name="Quintile\nBreaks") +
+  geom_county_text() +
+  labs(title = "Map 1.12: Spatial Lag to 2009 Development",
+       subtitle = "As fishnet centroids") +
+  mapTheme
+```
+
+Another way to incorporate neighbor's values is by referencing the cell's county in the model, *as a dummy variable*. With the acknowlegement, the cell receives the neighborhood effects of the county. Looking back at Map 1.12, if a cell is in San Francisco, the model will have already been trained on there not being a developments in that county -- so it will likely not provide a prediction. Many previous predictions were in Sonoma county, however . . .
+
+## 1.7. Incoporated Cities
+
+  In a similar vein to referencing counties, I am highlighting if a cell is in an incorporated city or not. With an acknowledgement of the cell being incorporated, it might be less likely to have availble land. On the other hand, unincorporated areas are also land preserves without development. 
+
+```{r cities}
+
+path = paste(DIR, "data/sf_cities/sf_cities.shp", sep='/')
+sf.cities = 
+  st_read(path) %>%
+  st_transform(proj_crs)
+
+sf.fish$in.city = 
+  st_join(
+    sf.fish,
+    sf.cities %>%
+      st_union() %>%
+      st_sf() %>%
+      mutate(in.city = 1),
+    left = TRUE
+  ) %>%
+  st_drop_geometry() %>%
+  pull(in.city)
+
+sf.fish[is.na(sf.fish$in.city),'in.city'] = 0
+
+ggplot() +
+  geom_sf(data=sf.MSA) +
+  geom_sf(data=sf.fish, 
+          aes(fill=in.city), color=NA) +
+  labs(title = "Map 1.13: Incorporated Cities",
+       subtitle = "As fishnet centroids") +
+  mapTheme
+
+```
+
+## 1.8. Correlations
+
+  The final step before fitting a model to predict for New Developments between 2010 to 2019, is to understand how the variables related to the dependent variable and each other. We want predictor variables that have a relationship to New Developments but not too much relationship with each other. If a model has too much multicollinearity (similarity between variables), the model's overall effects could be diluted with multiple variables predicting the same thing.  
+
+### Pearson Correlation
+
+A Pearson Correlation helps measure the linear relationship between continuous variables -- on a scale of -1 (negative correlation), 0 (no correlation), or 1 (postive correlation). A rule of thumb is that a correlation above .8 or below -.8 means they are highly related. 
+
+```{r corr_plot, include=FALSE}
+
+
+ggcorr_full = function(focus_df, #focus_vars= vars, 
+                       focus_var = var.dv, corrmethod = 'pearson',
+                       title=NULL, subtitle=NULL){
+  num = ncol(sf.cont)
+  
+  BC = 'white'
+  FC = "grey80"
+  
+  BL = 2
+  FL = .2
+  RL = 1:num-0.5
+  RL[1] = .1
+  ## RL[num] = .1
+  
+  library(reshape2)
+  
+  focus_df.melt = 
+    cor(focus_df, method=corrmethod) %>%
+    melt()
+  
+  
+  xfaces = focus_df.melt$Var1 %>% as.character() %>% unique()
+  yfaces = focus_df.melt$Var2 %>% as.character() %>% unique()
+  
+  change_focus = function(
+    focus_vector, focus, 
+    focus_change='bold', unfocus_change='plain'){
+    vector = focus_vector[]
+    vector[!(vector %in% c(focus))] = unfocus_change
+    vector[vector %in% c(focus)] = focus_change
+    return(vector)
+  }
+  
+  xfaces = change_focus(xfaces, focus_var)
+  yfaces = change_focus(yfaces, focus_var)
+  
+  focus_df.melt$value = 
+    focus_df.melt$value %>%
+    round(2)
+  
+  p = ggplot(focus_df.melt, aes(Var1, Var2, fill = value)) +
+    geom_tile(color = "white") +
+    geom_text(
+      aes(Var1, Var2, 
+          label = gsub("0\\.", "\\.", value)), 
+      color = "black", size = 4) +
+    scale_fill_gradient2(
+      ## grey95
+      low = "#6D9EC1", mid = "white", high = "#E46726",
+      midpoint = 0, limit = c(-1,1), space = "Lab", 
+                         name="Pearson\nCorrelation") +
+    theme_minimal() +
+    coord_fixed() +
+    theme(
+          axis.text.x = 
+            element_text(
+              face = xfaces,
+              angle=45, vjust=1, hjust=1, 
+              margin=margin(-2,0,0,0)),
+          ## axis.text.x = element_text(margin=margin(-2,0,0,0)),  
+          ###  Order: top, right, bottom, left  
+          axis.text.y = 
+            element_text(
+              face = yfaces,
+              margin=margin(0,-2,0,0)),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          legend.position="none") +
+    labs(title = title, subtitle=subtitle) + 
+    geom_vline(xintercept=RL, colour=BC, size=BL) +
+    geom_hline(yintercept=RL, colour=BC, size=BL) +
+    geom_vline(xintercept=RL, colour=FC, size=FL) +
+    geom_hline(yintercept=RL, colour=FC, size=FL)
+  return(p)
+  }
+
+```
+
+
+```{r corr_plot_vars}
+
+vars.ivs.cont = 
+  c(
+    #"id.fishnet", "lc.2001","geometry","id.county", 
+    #"lc.2009", "lc.2019", "dev.2001", "dev.2009",
+    #"dev.2019", "dev_ch.01_09", "dev_ch.09_19", 
+    "pop.00", "pop.10", "hwy.fed", "rail.2008", "rail.2021",
+    "dev.lag.2001", "dev.lag.2009", "dev.lag.2019", #"in.city", 
+    "pop.19", "pop_pct_ch.00_10","pop_pct_ch.10_19"
+  )
+
+sf.cont = 
+  sf.fish %>%
+  dplyr::select(c(vars.ivs.cont)) %>% 
+  st_drop_geometry(.)
+
+plot = ggcorr_full(sf.cont, "pop_pct_ch.10_19",
+            title = "Figure 1.1: Pearson Correlation",
+            subtitle = "Continous Variables"
+)
+print(plot)
+```
+
+Figure 1.1 shows a pearson correlation among the potential continuous variables. Some of the positive relationships between variables are concerning. Especially total population counts (pop.XX), distances to rail stations (rail.20XX), and development spatial lags (dev.lag.20XX). We will likely have to choose between them in the next correlation test.
+
+### T-Test & Mann–Whitney–Wilcoxon (MWW) Test
+
+  With the dependent variable being a binary, we cannot include it in a pearson correlation. In a more quantifiable method than the probability plot (Figure 2), we will use two tests to measure the differences in predictor variables for each binary. In Table 1.1, it displays two independence tests measuring the predictor variable's binary groups separation. 
+
+The first test is the Two Independent Samples **T-Test** which measures the means, standard deviation, & number of observations of the two binaries. The T-Statistic is the ratio of difference in the means -- higher suggests the means are separate, lower suggests they are similar. A small p-value (<.001) suggests that the statistic is valuable. 
+
+The second test is the **Wilcoxon rank-sum / Mann-Whitney-Wilcoxon** (MWW) test which measures if the two binary populations of the binary come from distinct populations. It is important to use the MWW test as it doesn't assume the variables are normally distributed. This is helpful as the probability distribution suggests many of the variables have skewed distributions. For the MWW Statistic, significantly separate values have low P-values (<0.05). 
+
+```{r MWW_corr_funct, include=FALSE}
+
+
+get_corr_data = function(
+  focus.df = sf.fish,
+  iv = "pop_pct_ch.10_19",
+  dv = "dev_ch.09_19",
+  test = 'chi-test',
+  full = FALSE,
+  test_return = FALSE
+){
+  
+  if (test %in% c('chi-test', 'chi')){
+    table = 
+      focus.df[,c(iv,dv)] %>%
+        table(., useNA='ifany')
+    
+    row.names(table) = 
+      row.names(table) %>% 
+      replace_na(., 'NA')
+    
+    colnames(table) = 
+      colnames(table) %>% 
+      replace_na(., 'NA')
+
+    table.test = 
+      chisq.test(table)
+    table.obs = 
+      table.test$observed
+    table.exp = 
+      table.test$expected
+    test.stat = 
+      table.test$statistic  %>% 
+      round_thresh(digits = 2)
+    test.doff = 
+      table.test$parameter
+    test.pval = 
+      table.test$p.value %>% 
+      round_thresh()
+    
+    test.stats.names = c(test,'degrees of freedom', 'p-value')
+    test.stats.values = c(test.stat, test.doff, test.pval)
+  }
+  
+  if (test %in% c('t-test', 't')){
+    test.fm = as.formula(glue('{iv} ~ {dv}'))
+    #test.label = glue("{iv} by {dv %>% gsub('.obs','',.)}")
+    
+    table.test = 
+      t.test(
+        formula = test.fm,
+        data = focus.df
+          )
+    
+    test.stat =
+      table.test$statistic %>% 
+      round_thresh(digits = 2, int_check = TRUE)
+    
+    test.doff =
+      table.test$parameter %>% 
+      round_thresh(digits = 1, int_check = TRUE)
+    
+    test.pval =
+      table.test$p.value %>% 
+      round_thresh()
+    
+    test.stats.names = c(test,'degrees of freedom', 'p-value')
+    test.stats.values = c(test.stat, test.doff, test.pval)
+  }
+  
+  if (test %in% c('wilcox', 'MWW')){
+    test.fm = as.formula(glue('{iv} ~ {dv}'))
+    test.label = glue("{iv} by {dv %>% gsub('.obs','',.)}")
+    
+    table.test = 
+      wilcox.test(
+        formula = test.fm,
+        data = focus.df
+          )
+    
+    test.stat =
+      table.test$statistic %>% 
+      round_thresh(digits = 2, int_check = TRUE)
+
+    test.pval =
+      table.test$p.value %>% 
+      round_thresh()
+    
+    test.stats.names = c(test, 'p-value')
+    test.stats.values = c(test.stat, test.pval)
+  }
+  
+  test.stats = set_names(
+    nm  = test.stats.names,
+    x   = test.stats.values)
+  
+  if (full==TRUE){
+    table.results = 
+      cbind(
+      table.obs,
+      table.exp
+      )
+    dv.colnames = colnames(table.obs)
+    
+    multi.col.subindex =
+      c(
+        paste(dv.colnames, '.observed', sep=''),
+        paste(dv.colnames, '.expected', sep='')
+          )
+    colnames(table.results) = multi.col.subindex
+    
+    colnames_ranked = 
+      sort_sub_sep(
+        colnames(table.results), 
+        order   = c(1, 2),
+        rev     = c('', 'rev'),
+        length  = 2)
+    table.results = table.results[,colnames_ranked$col]
+    
+    return(table.results)
+  }
+  
+  if(test_return==TRUE){
+    return(table.test)
+  }
+  
+  if (full!=TRUE){
+    return(test.stats)
+  }
+}
+
+df_corr_data = function(
+  dv = 'dev_ch.09_19',
+  ivs = vars.ivs.cont,
+  test = 'chi-test',
+  focus.df = sf.fish
+){
+  corr_df = data.frame()
+  for (focus_var in ivs){
+    var_list = get_corr_data(
+      focus.df = focus.df,
+      dv = dv, 
+      iv = focus_var, 
+      test=test)
+    var_list = c('iv'=focus_var, var_list)
+    corr_df = rbind(
+      corr_df,
+      as.data.frame(t(var_list)))
+  }
+  return(corr_df)
+  }
+
+```
+
+
+
+```{r dev_change_mww, results='asis'}
+
+var.dv = 'dev_ch.09_19'
+
+var.ivs = c(vars.ivs.cont)
+cont_vars = var.ivs
+focus_df = sf.fish %>%
+    dplyr::select(c(
+      var.dv,
+      cont_vars
+      ))
+
+ttest_df = data.frame()
+
+for (cont_var in cont_vars){
+
+  bin_df = focus_df %>% 
+    dplyr::select(cont_var, var.dv) %>%
+    filter(!is.na(cont_var))
+  
+  bin_FALSE = bin_df %>%
+    filter(.data[[var.dv]]==0) %>%
+    pull(cont_var)
+  bin_TRUE = bin_df %>%
+    filter(.data[[var.dv]]==1) %>%
+    pull(cont_var)
+  
+  bin_test =
+    t.test(bin_FALSE, bin_TRUE, alternative = "two.sided")
+
+  tstat = bin_test$statistic %>% as.numeric() %>% round(2)
+  doff = bin_test$parameter %>% as.numeric() %>% round()
+  pval = bin_test$p.value %>%
+    round_thresh(., thresh = .001,  digits = 3)
+  mean_FALSE =
+    mean(bin_FALSE, na.rm=TRUE) %>% round(1)
+  mean_TRUE =
+    mean(bin_TRUE, na.rm=TRUE) %>% round(1)
+
+  ttest_df = rbind(
+    ttest_df,
+    c(cont_var, mean_FALSE,mean_TRUE,tstat,doff,pval)
+  )}
+
+colnames(ttest_df) =
+  c('iv', "FALSE", "TRUE",
+    "Statistic", "DF", 'P-Value')
+
+tab_num = 2
+title = "Table 1.1: T-Test & MWW of Binary Variables"
+
+sf.cont.MWW = 
+  df_corr_data(
+    dv = var.dv,
+    ivs = cont_vars,
+    test = 'MWW'
+  )
+
+new_cols = c('iv', "No New Land Use Change", "New Development Change",
+    "Statistic", 'DF', 'P-Value', 'Statistic', 'P-Value')
+
+sf.cont.ttest = 
+  ttest_df
+  
+ merge(
+    sf.cont.ttest,
+    sf.cont.MWW,
+    on='iv',
+    sort=FALSE
+    ) %>%
+  mutate(
+    MWW = MWW %>% as.numeric() %>% count_format()
+  ) %>%
+  kable(., caption = title, label = NA,
+        col.names = new_cols) %>%
+  kable_styling() %>%
+  add_header_above(
+    header=
+      c(' '=1,'Mean'=2,'T-Test'=3, 'MWW'=2)
+  ) %>%
+  kableExtra::footnote(
+    alphabet =
+      c(
+        "Two independent samples t-test",
+        "Wilcoxon rank sum test",
+        "significance level: 0.05"
+               ))
+
+```
+Let's take in Table 1.1. The first two columns highlight the differences in means between cells of *No New Land Use Change* and *New Developments*. Even though some of the two means seem completely different *(e.g. distance to federal highways [hwy.fed])*, the means could be skewed by an irregular distribution. The T-Test statistics & p-values tell us that many variables *are* significant -- with the 2000 & 2010 populations being the least distinct. Because of their similarity to the 2019 population, we will remove them. 
+
+For the MWW statistic & p-value, it suggests that almost all of the variables are significant. If I had to remove some variables because of multicollinearity concerns, I would take out some of the develpment lags and one of the highways.  
+
+The large amount of significant variables could be great sign. But at the same time, the little amount of development could be too small of a sample size. Also, many cells could share the same metrics as the 2010-19 new developments, but just simply not be developed for a more niche reason. 
+
+# 2. Predicting Development
+
+The next step is to fit a binomial logistic regression -- which will give us the likelihood that a cell was developed between 2010 to 2019. With a probability of development, we can then determine the best 'cut-off' of when a probability becomes a newly developed cell. 
+
+### 2.1. Model
+
+With this model, I will be splitting on a 75% split. I am concerned about the low amount of dependent variables to both train and test on. But it's already too late to switch my report onto Phoenix where any unlivable tract of arid land is developed into a 76 gas station and sub-par model home. 
+
+For my model, the variables definitely lean towards a surface level, independent view on development. It doesn't incorporate supply-side policies that might be more *development for profit* focused. It also doesn't incorporate demand-side policies that focus on suggesting *socially-driven* land-uses.
+
+```{r model_dev}
+
+set.seed(420)
+trainIndex = 
+  createDataPartition(sf.fish$dev_ch.09_19, p = .75,
+                                  list = FALSE,
+                                  times = 1)
+sf.fish.train = sf.fish[ trainIndex,]
+sf.fish.test  = sf.fish[-trainIndex,]
+
+dv.var = 'dev_ch.09_19'
+dv.vars = c(
+  'lc.2009', 'dev_ch.01_09', 'dev.lag.2009',
+  'id.county', 'in.city',
+  'hwy.fed', 'rail.2021',
+  'pop.19', #'pop.00', 'pop.10',
+  'pop_pct_ch.00_10', 'pop_pct_ch.10_19'
+)
+
+dev_formula = 
+  paste(dv.vars, collapse=" + ") %>%
+  paste0(dv.var,' ~ ', .) %>%
+  as.formula()
+
+dev_model_2009_19 = 
+  glm(formula=dev_formula, 
+              family="binomial"(link="logit"), 
+      data = sf.fish.train)
+# 
+# gather(Model,McFadden) %>%
+#   ggplot(aes(Model,McFadden)) +
+#     geom_bar(stat="identity") +
+#     labs(title= "McFadden R-Squared by Model") +
+#     plotTheme
+# 
+# options(yardstick.event_first = FALSE)
+# 
+# testSetProbs = 
+#   testSetProbs %>% 
+#   mutate(predClass_05 = as.factor(ifelse(testSetProbs$probs >= 0.05 ,1,0)),
+#          predClass_17 = as.factor(ifelse(testSetProbs$probs >= 0.17 ,1,0))) 
+# 
+# testSetProbs %>%
+#   dplyr::select(-probs) %>%
+#   gather(Variable, Value, -class) %>%
+#   group_by(Variable) %>%
+#   summarize(Sensitivity = round(yardstick::sens_vec(class,factor(Value)),2),
+#             Specificity = round(yardstick::spec_vec(class,factor(Value)),2),
+#             Accuracy = round(yardstick::accuracy_vec(class,factor(Value)),2)) %>% 
+#   kable() %>%
+#   kable_styling(full_width = F)
+
+```
+
+### 2.2. Summary
+
+Our model's summary provides insight on how the model fit and which variables had the most potency. For this summary table. I will be referencing to a coefficient estimate, its p-value, and an Odds Ratio (OR). Because it is a logistic regression, an Odds Ratio is important as it displays the odds that a variable is explanatory. A OR statistic much lower than 1 suggests there is a strong positive relationship with the dependent variable. Higher than 1 suggests a strong negative relationship. A statistic close to 1 suggests there is less of a relationship. 
+
+```{r model_stats, results='asis'}
+
+focus_model = dev_model_2009_19
+
+model.sum =
+  dev_model_2009_19 %>%
+  tidy() %>%
+  #filter(!grepl("id.dist",term)) %>%
+  mutate(
+    Variable = term,
+    Estimate = estimate %>% round(3) %>% format(big.mark=','),
+    std.error = std.error %>% round(3) %>% format(big.mark=','),
+    t.value = round_thresh(statistic, thresh = .001, digits=3),
+    p.value = p.value %>% round_thresh(., thresh = .001, digits=3)
+  ) %>%
+  dplyr::select(Variable, Estimate, std.error, t.value, p.value)
+
+
+model.sum.CI =
+  exp(
+    cbind(
+      OR = coef(focus_model),
+      confint(focus_model)
+      )
+    ) %>%
+  round(3) %>%
+  as.data.frame()
+model.sum.CI$Variable = rownames(model.sum.CI)
+
+model.all.summ.CI =
+  model.sum %>%
+  merge(
+    .,
+    model.sum.CI,
+    on='Variable',
+    sort = FALSE
+  )
+
+  model.all.summ.CI[!apply( model.all.summ.CI, 1, function(x) sum(is.na(x))>1 ), ] %>%
+  mutate(
+    Estimate = Estimate, #%>% as.numeric() %>% round(2),
+    std.error = std.error, # %>% as.numeric() %>% round(0),
+    OR = ifelse(
+      (OR>1000 | OR == Inf), 
+      '>1,000', 
+      OR %>% round_thresh(., int_check = F)),
+    # `2.5 %`=`2.5 %` %>% 
+    #   round_thresh(., int_check = F),
+    # `97.5 %`=ifelse(
+    #   (`97.5 %` >1000 | `97.5 %` == Inf), 
+    #   '>1,000', 
+    #   `97.5 %` %>% round_thresh(., int_check = F))
+  )  %>%
+  dplyr::select(-`2.5 %`, -`97.5 %`) %>% 
+  flextable(.) %>%
+  theme_vanilla(.) %>%
+  # align(., 
+  #       align = "center", 
+  #       part = "header") %>%
+  # align(., j=3:length(cols)-2, 
+  #       align = "right", 
+  #       part = "body") %>%
+  set_table_properties(
+    ., layout='autofit') #%>%
+  # add_footer_row(
+  #   ., 
+  #   values=c("2.5% & 97.5% Confidence Intervals"), 
+  #   colwidths = c(length(cols)-2)) %>%
+  # add_footer_row(
+  #   ., 
+  #   values=c("OR = Odds Ratio"), 
+  #   colwidths = c(length(cols)-2)) #%>%
+  #merge_v(j = ~Variable)
+
+```
+The model summary table is looking like it has a decent mix of significance.
+
+Many of the county's dummy variables have a *higher* positive or lower relationship with New Developments from 2010 to 2019. This makes sense as the county's neighborhood effects cover many relationships that other variables cannot. One of the least significant counties is Sonoma, likely because it had a mix of both developments and no changes -- without a strong development or urban pattern.
+
+Some relationships are frightening. The distance to federal highways (hwy.fed), distance to rail stations (rail.2021), and population in 2019 (pop.2019) all appear as if they have no strong relationship. This could be due to other variables *(that we didn't test for multicollinearity against them because they were binary)* are representing developed and high-traffic areas. Another issue could be how we related these variables to the fishnets. With a population interpolation joining to a large fishnet, it might smooth over some potential effects. But then again, how granular can we get population data? For highways and railways, the distance aggregation function I used had a 'mean' sub-function that might have improperly attached distance values. Overall, population, highways, and railways appeared common throughout the Bay Area. 
+
+
+## 2.3. Measure Logistic Predictiveness
+
+To determine the true predictive nature of our binomial logistic model, we will:
+
+1. Determine the **Cut-Off** threshold of how to label the outcomes of our New Developments Dependent Variable,
+
+2. Re-Evaluate the **Specificity, Sensitivity, & Misclassification** rates, then
+
+3. Use a **ROC Curve** to determine the quality of our fit
+
+#### Determine Cut-Off Threshold
+
+Our testing model only gave us the probability of predicting that the homeowners took the vouchers.That probability, needs a *cut-off threshold* that labels its binomial outcome. The threshold will never perfectly divide the predictions into their observed outcomes -- but we can optimize to collect the most true positives and negatives. 
+
+
+```{r cut_off_functions, include=FALSE}
+
+percent_formatter = function(str, n=0) (str * 100) %>% round(n) %>% format(., big.mark = ",") %>% paste0(., "%")
+
+get_cut_off_values = function(
+  focus_dv = 'dev_ch.09_19',
+  focus_df = sf.fish.train,
+  focus_glm = dev_model_2009_19,
+  cut_off = 0.05
+){
+  fit = focus_glm$fitted.values
+
+  #a is a matrix combining the vectors containing y and y-hat in matrix a; first variable is y
+  #second variable is fit, which is y-hat
+  a = cbind(
+    focus_df[[focus_dv]],
+    fit
+    )
+  
+  #b is matrix a, just sorted by the variable fit
+  b = a[order(a[,2]),]
+  
+  #Calculating variable c which is 1 if y-hat (second column of matrix b) is greater
+  #than or equal to 0.05 and 0 otherwise.
+  
+  #Other cut-offs can be used here!
+  
+  cut_offs = c(cut_off)
+  
+  c = (b[,2] >= cut_offs[1])
+  c_colnames = glue("Prob.Above{str_remove(cut_offs[1], '^0+')}")
+  
+  if (length(cut_offs)>1){
+    for (
+      current_cut_off in cut_offs[2:length(cut_offs)]
+      ){
+      c = cbind(
+        c,
+        (b[,2] >= current_cut_off)
+        )
+      current_cut_off = current_cut_off %>% str_remove(., "^0+")
+      c_colnames = 
+        c(c_colnames, glue("Prob.Above{current_cut_off}"))
+      }}
+  
+  #Creating matrix d which merges matrixes b and c
+  d = cbind(b,c)
+  
+  #Let's label the columns of matrix d for easier reading
+  colnames(d) = c(
+    glue("Observed.{focus_dv}"),
+    glue("Probability.{focus_dv}"),
+    c_colnames
+    )
+  
+  #Converting matrix to data frame
+  e = as.data.frame(d)
+  
+  return(e)
+}
+
+  
+get_sens_spec_miss = function(
+  cut_off = cut_off_list[1],
+  focus_dv = 'Observed.dev_ch.09_19',
+  focus_df = cut_off_values
+){
+  
+  str_cut_off = cut_off %>% str_remove(., "^0+")
+  focus_cut_off = glue("Prob.Above{str_cut_off}")
+  focus_formula = as.formula(glue("~ {focus_cut_off} + {focus_dv}"))
+  focus_dv_cut_off = xtabs(formula=focus_formula, data=focus_df) %>% as.matrix()
+  a = focus_dv_cut_off[1]
+  b = focus_dv_cut_off[3]
+  c = focus_dv_cut_off[2]
+  d = focus_dv_cut_off[4]
+  
+  Sensitivity = d/(b+d)
+  Specificity = a/(a+c)
+  Misclassification = (b+c)/(a+b+c+d)
+  
+  return(data.frame(
+    Cut_Off = cut_off,
+    Sensitivity = Sensitivity,
+    Specificity = Specificity,
+    Misclassification = Misclassification
+  ))
+}
+
+  
+get_abcd = function(
+  cut_off = cut_off_list[1],
+  focus_dv = 'Observed.dev_ch.09_19',
+  focus_df = cut_off_values
+){
+  
+  str_cut_off = cut_off %>% str_remove(., "^0+")
+  focus_cut_off = glue("Prob.Above{str_cut_off}")
+  focus_formula = as.formula(glue("~ {focus_cut_off} + {focus_dv}"))
+  focus_dv_cut_off = xtabs(formula=focus_formula, data=focus_df) %>% as.matrix()
+  a = focus_dv_cut_off[1]
+  b = focus_dv_cut_off[3]
+  c = focus_dv_cut_off[2]
+  d = focus_dv_cut_off[4]
+  
+  Sensitivity = d/(b+d)
+  Specificity = a/(a+c)
+  Misclassification = (b+c)/(a+b+c+d)
+  
+  return(data.frame(
+    cut_off,
+    a,
+    b,
+    c,
+    d
+  ))
+}
+
+
+```
+
+
+To determine this optimized cutoff rate, we first run the testing model on the training dataset to find predictive values. With those test dataset predictions, we can find misclassification rates with hypothetical cut-offs. 
+
+The Cross-Validation partially gave us the AUC, Sensitivity, and Specificity -- but it was based off of the permutation of many partitions. The table below shows proposed cut-off thresholds along with their Sensitivity (True Positive Rate), Specificity (True Negative Rate), and Misclassification rate (combined False Positive & Negative Rate). Initially it seems best to pick the threshold with the least misclassification (50%), but it would be best to pick a threshold that produces higher correct predictions -- i.e. the highest possible Sensitivity *and* Specificity.
+
+``` {r mode_comp, results='asis'}
+
+# lm.dwtn.all$labels
+# 
+library(ROCR)
+
+focus_dv = 'dev_ch.09_19'
+focus_df = sf.fish.train
+focus_glm = dev_model_2009_19
+  
+focus.ROC = cbind(focus_df[[focus_dv]], focus_glm$fitted.values) %>%
+  as.data.frame()
+colnames(focus.ROC) = c("labels","predictions")
+
+
+pred = prediction(focus.ROC$predictions, focus.ROC$labels)
+
+ROC.perf = performance(pred, measure = "tpr", x.measure="fpr")
+
+####
+
+opt.cut = function(perf, pred){
+  cut.ind = mapply(FUN=function(x, y, p){
+    d = (x - 0)^2 + (y-1)^2
+    ind = which(d == min(d))
+    c(sensitivity = y[[ind]], 
+      specificity = 1-x[[ind]], 
+      cutoff = p[[ind]])
+  }, perf@x.values, perf@y.values, pred@cutoffs)
+}
+
+cut_off_opt_df = opt.cut(ROC.perf, pred) %>% 
+  t() %>% as.data.frame()
+cut_off_opt = cut_off_opt_df$cutoff
+
+
+cut_off_list = c(0.001, 0.01, 0.05, .11, 0.25, .5, .75)
+cut_off_list = c(cut_off_list,cut_off_opt)
+cut_off_values = get_cut_off_values(cut_off = cut_off_list)
+
+
+sf.cutoff = get_sens_spec_miss(
+  focus_df = cut_off_values,
+  cut_off=cut_off_list[1])
+
+for (curr_cut_off in cut_off_list[2:length(cut_off_list)]){
+      sf.cutoff = rbind(
+        sf.cutoff,
+        get_sens_spec_miss(
+          focus_df = cut_off_values,
+          cut_off = curr_cut_off)
+      ) %>% as.data.frame()
+      row.names(sf.cutoff) = NULL}
+sf.cutoff = 
+  sf.cutoff %>% 
+  round(4) %>% arrange(Cut_Off) %>%
+  mutate(
+    Cut_Off = sub("0+$", "", as.character(Cut_Off)) %>%
+      str_remove(., "^0+")
+  )
+
+cols = colnames(sf.cutoff)
+new_cols = setNames(
+  replace(cols, cols=='Cut_Off', 'Cut-Off Value'), 
+  cols)
+
+#sf.cutoff.flex = 
+  sf.cutoff %>%
+  mutate(Cut_Off = 
+           ifelse(Cut_Off=='.016',
+                  '1.6%*',
+                  Cut_Off %>% 
+                    as.numeric() %>%
+                    percent_formatter(n=3)
+                  ),
+         Sensitivity = Sensitivity %>% 
+                    as.numeric() %>%
+                    percent_formatter(n=1),
+         Specificity = Specificity %>% 
+                    as.numeric() %>%
+                    percent_formatter(n=1),
+         Misclassification = Misclassification %>% 
+                    as.numeric() %>%
+                    percent_formatter(n=1)
+         ) %>%
+  flextable(., col_keys = cols) %>%
+  set_header_labels(
+    ., 
+    values = new_cols) %>%
+  theme_vanilla(.) %>%
+  align(., 
+        align = "center", 
+        part = "header") %>%
+  align(., j=2:length(cols), 
+        align = "right", 
+        part = "body") %>%
+  align(., j=1, 
+        align = "center", 
+        part = "body") %>%
+  set_table_properties(
+    ., layout='autofit') %>%
+  bg(., i = ~ Cut_Off == '9.1%*', bg = "wheat", part = "body") %>%
+  add_footer_row(
+    ., 
+    values=c("* Optimium Cut-Off"), 
+    colwidths = c(length(cols)))
+
+
+```
+
+Using a function that finds where the Sensitivity and Specificity rates intersect *(where the True Positive & Negative rate is maximized)*, we find that the optimum cut-off threshold is 1.59%. 
+
+This is interesting as it suggests that there is only **a 1.6% likelihood of development** with our model. We will have to evaluate how many misclassifications it created, how the probabilities distribute, and what does it look like spatially. 
+
+#### Confusion Matrix & Graph
+The *confusion matrix* for the threshold of 1.59% (below) highlights the True/False Negative/Positive rates that form the previously discussed rates. Our True Positives (87%) are high. But so is our False Positive (12%) -- suggesting that the model is definitely **over predicting New Developments**. 
+
+Is this because our model needs to more granular cells? Does it need more variables? Or is it impossible to predict when many cells appear *developable* and the actual rate is around 1%?
+
+```{r confusion_matrix, results='asis'}
+sf.fish = 
+  sf.fish %>%
+  mutate(
+    dev_ch.09_19.predict.pct = predict(
+        dev_model_2009_19, 
+        sf.fish, # %>% na.omit(), 
+        type= "response"),
+    dev_ch.09_19.predict  = 
+      as.factor(
+        ifelse(
+          dev_ch.09_19.predict.pct > cut_off_opt,
+          1, 
+          0
+          )))
+
+testlen = nrow(sf.fish)
+sf.fish.test.mx = caret::confusionMatrix(
+  sf.fish$dev_ch.09_19.predict %>% as.factor(), 
+  sf.fish$dev_ch.09_19 %>% as.factor()) %>% 
+  as.matrix(., what = "xtabs") %>%
+  as.data.frame() %>%
+  transmute(
+    Results = c('Predicted\nOutcome'),
+    Outcome = c("Below Cutoff\n(No Dev)","Above Cutoff\n(Developed)"),
+    `Below Cutoff\n(No Dev)` = (`0`/testlen) %>% percent_formatter() %>%
+      paste(c('(a)','(c)'), ., sep=' '),
+    `Above Cutoff\n(Developed)` = (`1`/testlen) %>% percent_formatter() %>%
+      paste(c('(b)','(d)'), ., sep=' ')
+  )
+rownames(sf.fish.test.mx) = NULL
+
+rename_cols = setNames(
+  c("", "", "Below Cutoff\n(No Dev)", "Above Cutoff\n(Developed)" ), 
+  colnames(sf.fish.test.mx))
+
+
+sf.fish.test.mx %>%
+  flextable(.) %>%
+  theme_vanilla(.) %>%
+  align(., 
+        align = "center", 
+        part = "header") %>%
+  align(., j=2:4, 
+        align = "center", 
+        part = "body") %>%
+  align(., j=1, 
+        align = "center", 
+        part = "body") %>%
+  set_table_properties(
+    ., layout='autofit') %>%
+  merge_v(j = ~Results) %>%
+  set_header_labels(
+    ., 
+    values = rename_cols) %>%
+  add_header_row(
+    ., 
+    values = c('', 'Observed Outcome'), 
+    colwidths = c(2,2)) %>%
+  bold(., i = 1:2, j = 1:2, bold = TRUE, part = "body") %>%
+  add_footer_row(
+    ., 
+    values=c(glue("Cutoff = {percent_formatter(cut_off_opt,n=3)} \nSpecificity =  a/(a+c)\nSensitivity =  d/(d+b)\nMisclassification Rate =  (b+c)/(a+b+c+d)")), 
+    colwidths = c(4))
+
+#   False Negative      True Negative
+## Ref  No Click      Ref   Click
+## Pred No Click      Pred  No Click
+
+#   False Positive      True Positive
+## Ref  No Click      Ref   Click
+## Pred Click         Pred  Click
+
+```
+
+The Figure 2.1 **Predicted Probabilities graph** below provides a visual of the confusion matrix. My concerns that the dataset just has too many True Negatves seems valid. The probability of development is just extremely low. Maybe my model is good at crossing out areas that definetly won't have new land use changes (e.g. County of San Francisco) -- but doesn't get into the specifics of the exurbs that are developed on the fringe of urban areas. 
+
+``` {r plotp}
+
+auc.perf = performance(pred, measure ="auc")
+AUC = auc.perf@y.values[[1]] %>% round(4)
+
+palette2 = c("#981FAC","#FF006A")
+
+ggplot() + 
+  # geom_density(
+  #   data=focus.ROC,
+  #   aes(x = predictions, group=labels), 
+  #   fill='grey90', color='black', lwd=1.5
+  #   ) +
+  geom_density(
+    data=focus.ROC %>%
+      mutate(
+        labels = ifelse(
+          labels==1,
+          'New Development',
+          'No Change in Land Use'
+      )),
+    aes(x = predictions, group=labels, fill=labels, color=labels),
+    fill='grey90', lwd=1.25 #, color='orange'
+    # linetype='dashed'
+    ) +
+  facet_grid(labels ~ .) +
+  scale_fill_manual(values = palette2) +
+  labs(
+    x = "Probability", 
+    y = "Density of Probabilities",
+    title = "Figure 2.1: Predicted Probabilities - 2009-19 Development Change Model",
+    subtitle = glue("Optimal Cut-Off Rate = {cut_off_opt %>% percent_formatter(n=1)}  (dashed line)")
+    ) + 
+  scale_x_continuous(
+    labels = function(num) num %>% percent_formatter(),
+    name="Probability") + 
+  geom_vline(xintercept=cut_off_opt,
+             linetype='dashed') + 
+  theme(strip.text.x = element_text(size = 18),
+        legend.position = "none") + 
+  plotTheme
+#dev.off()
+
+```
+
+
+#### ROC Curve
+
+The Figure 2.2 ROC curve is a goodness-of-fit plot of the true positive rate (i.e., sensitivity) against false positive rate (i.e., specificity). A curve at a 45 degree angle (i.e. just a diagonal line) suggests the model is inaccurate. A curve with a perfect 90 degree angle would be very predictive but is likely the result of over fitting. In the chart below, our curve's semi-bow shape is concerning as it leans closer to a 45-degree angle than the 90-degree right angle. 
+
+The area under our model’s ROC curve is 0.9175 -- suggesting that our model is high quality! But with the information from the Confusion Matrix & Graph, it is high quality at predicting the majority of our data -- which is non-development. Lets get a map to truly understand the difficulties before I rip this model to shreds and get a B in this class. 
+
+``` {r fit}
+
+#library(rROC)
+
+library(plotROC)
+
+ggplot() +
+  geom_roc(
+    data = focus.ROC, 
+    aes(d = labels, m = predictions),
+    n.cuts = 50, labels = FALSE, colour = "#000000") +
+  # geom_roc(
+  #   data = test.predict, 
+  #   aes(d = as.numeric(test.predict$outcome), m = predict.2),
+  #   n.cuts = 50, labels = FALSE, colour = "#FE9900") +
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey') +
+  labs(
+    title = "Figure 2.2: ROC Curve - 2009-19 Development Change Model",
+    subtitle = glue("Area Under Curve = {AUC}")
+    )
+
+```
+#### Confusion Map
+
+  The map secures the evidence that the model is over estimating developments. It appears that my model is considering open land too highly without regarding the political & legal constraints of a land trust or preserve. I believe that most predicted New Developments disappear when considering the many jurisdictonal land-use restraints. So numerous that I couldn't find an accurate land use regulation dataset, *and I work at one of those jurisdictions in Contra Costa County (CC).* 
+
+```{r, warning = FALSE, message= FALSE, fig.height = 6, fig.width= 8}
+
+sf.fish %>% 
+  dplyr::select(dev_ch.09_19, dev_ch.09_19.predict) %>%
+  transmute(
+    `Observed` = dev_ch.09_19, 
+    `Predicted` = dev_ch.09_19.predict
+  ) %>%
+  gather(Variable, Value, -geometry) %>%
+  ggplot(
+    data=.,
+   aes(x=xyC(.data[['geometry']])[,1], y=xyC(.data[['geometry']])[,2], 
+       colour=Value %>% as.factor())
+    ) +
+    geom_point(shape=18) +
+    facet_wrap(~Variable) +
+    scale_colour_manual(values = c('#FFFFFF','#800000'), labels=c("No Change","New Development"),
+                        name="") +
+    geom_county() + 
+    geom_county_text() +
+    labs(title="Map 2.1: Development Predictions", subtitle="Development Change from 2010 to 2019 (with 1.6% Probability Cutoff)") + 
+    mapTheme
+```
+
+Excuses aside, Map 2.2 highlights the results in a map. This map highlights how small the New Developments dataset is and how there is alot of fine tuning needed to understand Bay Area growth. 
+
+```{r, warning = FALSE, message = FALSE, fig.height=12}
+ConfusionMatrix.metrics <-
+  sf.fish %>%
+    mutate(dev.True.Pos = ifelse(dev_ch.09_19  == 1 & dev_ch.09_19.predict == 1, 1,0),
+           dev.True.Neg = ifelse(dev_ch.09_19  == 0 & dev_ch.09_19.predict == 0, 1,0),
+           dev.False.Pos = ifelse(dev_ch.09_19  == 0 & dev_ch.09_19.predict == 1, 1,0),
+           dev.False.Neg = ifelse(dev_ch.09_19  == 1 & dev_ch.09_19.predict == 0, 1,0)
+           ) %>%
+    dplyr::select(., 
+                  c('dev.True.Pos', 'dev.True.Neg', 'dev.False.Pos', 'dev.False.Neg')) %>%
+  transmute(
+    `True Negative\nActually No Change` = dev.True.Neg,
+    `False Positive\nPredicted Developed` = dev.False.Pos,
+    `False Negative\nPredicted No Change` = dev.False.Neg,
+    `True Positive\nActually Developed` = dev.True.Pos
+  ) %>%
+  gather(Variable, Value, -geometry)
+
+ggplot(data=ConfusionMatrix.metrics) +
+  geom_point(aes(x=xyC(ConfusionMatrix.metrics)[,1], 
+                 y=xyC(ConfusionMatrix.metrics)[,2], colour = as.factor(Value))) +
+  facet_wrap(~Variable) +
+  scale_colour_manual(values = c('#FFFFFF', '#FF0000'), labels=c("Correct","Incorrect"),
+                       name="") +
+  #geom_county_text() + 
+  geom_county() + 
+  labs(title="Map 2.2: Development Predictions", 
+       subtitle="Red = Test Results (with 1.6% Cutoff)") + 
+  mapTheme +
+  theme(legend.position = "none")
+```
+# 3. Predicting Population
+
+The next section is *supposed to* evaluate how a population projection can influence predicted developments. The population data is from Plan Bay Area 2040 [[link](http://projections.planbayarea.org/)]
+
+## 3.1. 2030 Population
+
+My strategy was to bring in 2030 populations for each county. Find out what percentage each cell accounted for the county's 2019 population. Then multiply that percentage by the county's 2030 projected population. 
+
+Figure 3.1 shows Plan Bay Area's projections for the next 20 years. The counties that have higher density, higher growth, *and* higher amounts of open land -- Alameda & Santa Clara -- all suggest higher growth rates and totals. Just outside of that criteria is San Francisco -- who is running out of immediately developable land. Contra Costa has open land and a strong suburban core -- but has both preserves and (development) conservative city jurisdictions. The other counties have a ton of open land but a land use philosophy of an old curmudgeon. All of these counties are ones who shot down BART's full-bay expansion in the 1960s so they can focus on highways and *very* exclusionary land use practices.   
+
+```{r pop}
+
+path = paste(DIR, "data/sf_pop_data.xlsx", sep='/')
+sf.pop_proj = read_excel(path)
+col_names = c("County", "X2010", "X2015", "X2020", "X2025", "X2030", "X2035", "X2040")
+colnames(sf.pop_proj) = col_names
+sf.pop_proj.2030 = sf.pop_proj %>% dplyr::select(County, X2030)
+sf.pop_proj.2030.tot = sf.pop_proj.2030$X2030 %>% sum()
+
+sf.pop_proj %>% 
+  gather(variable, value, -County) %>%
+  mutate(Year = sapply(variable, function(s) str_replace(s, 'X','')) %>%
+           as.integer(),
+         Population = value/1000000,
+         label = if_else(Year == max(Year), as.character(County), NA_character_)
+         ) %>%
+  ggplot(., aes(x=Year, y=Population, group=County, color=County), color='lightgrey') + 
+    geom_line(lwd=1.5) +
+    geom_label_repel(aes(label = label),
+      nudge_x = 10,
+      na.rm = TRUE) + 
+    ylab('Figure 3.1: Projected Population (millions)') +
+    xlab('Year') +
+    plotTheme + 
+  theme(legend.position = "none")
+
+```
+
+My method of divying up the 2030 population projection can be seen in Map 3.1. The first two population periods show more natural, uneven population loses and gains. The anti-development North Bay actually had population loses in the 2000-2019 period. The loses could also be exacerbated by the interpolation method of joining tracts to fishnets. Those areas also have low amounts of developed areas and populations. My suggested population growth of 2019 to 2030 appears to mostly show the entire county's growth. Likely a result of my method of multiplying the 2019 percent share to the 2030 total.
+
+
+```{r pop_add}
+
+sf.fish_pop = left_join(
+    sf.fish,
+    sf.pop_proj %>% 
+      mutate(id.county = County, pop.30.tot = X2030, pop.20.tot = X2020) %>%
+      dplyr::select(id.county, pop.30.tot, pop.20.tot),
+    on='id.county'
+  ) %>% 
+  st_drop_geometry %>%
+  dplyr::select(pop.30.tot, pop.20.tot)
+
+sf.fish$pop.20.tot = 
+  sf.fish_pop %>%
+  pull(pop.20.tot)
+sf.fish$pop.30.tot = 
+  sf.fish_pop %>%
+  pull(pop.30.tot)
+
+sf.fish$pop.19.pct_county = 
+  sf.fish$pop.19 / sf.fish$pop.20.tot
+
+sf.fish$pop.30.est = 
+  sf.fish$pop.19.pct_county * sf.fish$pop.30.tot
+
+sf.fish$pop_pct_ch.19_30 = 
+  (sf.fish$pop.30.est - sf.fish$pop.19) / sf.fish$pop.30.est
+
+diverg7 = c("#d73027","#fc8d59","#fee08b","#ffffbf","#d9ef8b","#91cf60","#1a9850")
+pbreaks = c(-1000, -1, -.5, -.1, .1, .5, 1, 1000)
+plabs = c(
+  '-100%', '-99% to -50%', '-49% to -10%', '-9% to 9%', 
+  '+10% to +49%', '+50% to +99%', '+100%')
+
+sf.fish %>%
+  dplyr::select(pop_pct_ch.00_10, pop_pct_ch.10_19, pop_pct_ch.19_30) %>%
+    transmute(
+      `2000 to 2010` = pop_pct_ch.00_10, 
+      `2010 to 2019` = pop_pct_ch.10_19, 
+      `2019 to 2030*` = pop_pct_ch.19_30
+    ) %>%
+    gather(Variable, Value, -geometry) %>%
+ggplot(data=.) +
+  geom_point(aes(x=xyC(.data[['geometry']])[,1], 
+                 y=xyC(.data[['geometry']])[,2], 
+                 color=factor(cut(Value, breaks=pbreaks))
+                 )) +
+  facet_wrap(~Variable) +
+  scale_color_manual(values = diverg7,
+                      labels=plabs,
+                     name="Quintile\nBreaks") +
+  #geom_county_text() + 
+  geom_county(alpha=0) + 
+  labs(title="Map 3.1: Population Change", 
+       subtitle="Change in Census, ACS, & Projected Populations*") + 
+  mapTheme
+
+```
+
+The ill affects of the county's blanket growth in the Farallon Islands. Even though they are 30 miles west of the City & County of San Francisco, the divvying up method gave the islands an 100% increase in population. The islands, although incorporated in San Francisco, are quite inhospitable to humans. But the islands are quite famous for having thousands of birds and were previously the main source of eggs for the city [[podcast](http://www.kitchensisters.org/present/the-egg-wars/)].
+
+# Conclusions
+
+Although I intended on adding a 4th section that showed how a fully-connected BART system could raise developments, my time cut it short.
+
+To summarize the report, I was able to highlight that the San Francisco Bay Area's inconvenient geography, stagnant land-use policies, political jurisdictions, and semi- tapped out land resources make it difficult to (1) add new developments, and (2) predict for new developments.
+
+If I had another attempt at this report, I would want to incorporate more of the land use designations that realistically restrict developments. I also would want to explore a more granular land cover dataset -- without making the script un-runnable. If I didn't stick with this region, I would want to explore the opposite sitauation of Phoenix -- where there is *no* stop to the development. 

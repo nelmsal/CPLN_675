@@ -1,0 +1,38 @@
+load_packages	count_format	DIR	mapTheme	palette10	palette2	palette4	palette5	plotTheme	round_str	round_thresh
+sf_permits	pic_path
+load_data	CA_proj	from	geom_county	geom_county_text	geom_text_sf	get_first_letter	get_first_letters	path	proj_crs	replace_list	sf.bbox	sf.counties	sf.counties_labels	sf.extent	sf.MSA	sf_to_labels	to
+plot_functions	quintileBreaks	rast	raster_to_centroid	raster_to_fishnet	rename_first_col	select_not_cols	st_join_as_col	xyC
+lc_raster_import	LC_DIR	lc_year_path	raster_crop	raster_download	sf.lc.2001	sf.lc.2009	sf.lc.2019
+rast_to_fishnet	add_raster_as_col	sf.fish
+rast_to_col	add_raster_as_col	sf.fish
+lc_change_col	if_lc_same	sf.fish
+plot_fishnet	
+lc_change_1019_plot	
+lc_agg_col	agg_raster	aggregateRaster	sf.agg.2001	sf.agg.2009	sf.agg.2019
+sf_bay_counties	acs_vars	get_demo_col	path_pop_00	path_pop_10	sf.fish	sf.pop.00	sf.pop.10	sf.pop.19	sf_bay.counties
+pop_0010_map	pbreaks	plabs
+transit_routes	bad.transit	path	sf.troutes	sf.troutes.2008	sf.troutes.2021	TRANS_DIR
+transit_stops	bad.stations	path	sf.stations	sf.stations.2008	sf.stations.2021	TRANS_DIR
+hwy_import	hwy.avg_lane_width	hwy.fed	hwy.fed_lanes	hwy.state	hwy.state_lanes	hwy.types	path	sf.hwy	TRANS_DIR
+lc_dev_plot	get_dev_col	sf.fish
+transpo_distances	emptyRaster	get_dist_raster	path	sf.fish
+unnamed-chunk-1	nn_dev_year	nn_function	sf.fish
+unnamed-chunk-2	
+cities	path	sf.cities	sf.fish
+unnamed-chunk-3	ConfusionMatrix.metrics
+unnamed-chunk-4	
+unnamed-chunk-5	
+corr_plot	ggcorr_full
+corr_plot_vars	plot	sf.cont	vars.ivs.cont
+MWW_corr	df_corr_data	get_corr_data
+dev_change_mww	bin_df	bin_FALSE	bin_test	bin_TRUE	cont_var	cont_vars	doff	focus_df	mean_FALSE	mean_TRUE	new_cols	pval	sf.cont.MWW	sf.cont.ttest	tab_num	title	tstat	ttest_df	var.dv	var.ivs	.urban_growth_modeling_sf_cache/html/dev_change_mww_69a124dfabf542b838f87740cbce70de_meta
+model_dev	dev_formula	dev_model_2009_19	dv.var	dv.vars	sf.fish.test	sf.fish.train	trainIndex
+model_stats	focus_model	model.all.summ.CI	model.sum	model.sum.CI
+cut_off_functions	get_abcd	get_cut_off_values	get_sens_spec_miss	percent_formatter
+mode_comp	cols	curr_cut_off	cut_off_list	cut_off_opt	cut_off_opt_df	cut_off_values	focus.ROC	focus_df	focus_dv	focus_glm	new_cols	opt.cut	pred	ROC.perf	sf.cutoff
+confusion_matrix	rename_cols	sf.fish	sf.fish.test.mx	testlen
+plotp	AUC	auc.perf	palette2
+fit	
+pop	col_names	path	sf.pop_proj	sf.pop_proj.2030	sf.pop_proj.2030.tot
+pop_add	diverg7	pbreaks	plabs	sf.fish	sf.fish_pop
+MWW_corr_funct	df_corr_data	get_corr_data

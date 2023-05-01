@@ -135,12 +135,13 @@ Pull out just the variables we want for this analysis. Then create two more quin
 ```{r}
 epa2 <-
   epa %>% 
-  st_centroid() %>% st_coordinates() %>%
+  st_centroid(quiet=T) %>% st_coordinates(quiet=T) %>%
   cbind(
-    epa %>% 
-    dplyr::select(HwyDensity,distWater,sumDevelop,sumForest,
-           distI95,Population,distCities,training,
-           ozoneHigh,Ave_ozoneH))
+    epa %>% select(
+      HwyDensity,distWater,sumDevelop,sumForest,
+      distI95,Population,distCities,training,
+      ozoneHigh, Ave_ozoneH)
+    )
 ```
 Let’s then map two of these features using grid.arrange to splice them together.
 ```{r}
@@ -187,9 +188,12 @@ Let’s estimate the ‘kitchen sink’ regression with all of our variables but
 
 Describe the summary and its goodness of fit.
 ```{r}
-reg <- lm(ozoneHigh ~ ., data=training %>% 
-                                   as.data.frame() %>%
-                                   select(-Ave_ozoneH,-geometry,-training,-X,-Y))
+reg <- lm(
+  ozoneHigh ~ ., 
+  data = training %>% 
+   as.data.frame() %>%
+   select(-Ave_ozoneH,-geometry,-training,-X,-Y))
+
 summary(reg)
 
 ```
@@ -197,8 +201,8 @@ summary(reg)
 Estimate it again with x and y. What do you notice. Why?
 ```{r}
 reg2 <- lm(ozoneHigh ~ ., data=training %>% 
-                                   as.data.frame() %>%
-                                   select(-Ave_ozoneH,-geometry,-training))
+                       as.data.frame() %>%
+                       select(-Ave_ozoneH,-geometry,-training))
 summary(reg2)
 ```
 

@@ -2,6 +2,9 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "..\\..\\Code\\Py\\kriging"
 		}
 	],
 	"settings": {
